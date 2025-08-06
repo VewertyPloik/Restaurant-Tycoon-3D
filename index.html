@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>3D Restaurant Tycoon - 3D Food & Waiting Line</title>
+<style>
+  body { margin: 0; overflow: hidden; font-family: Arial, sans-serif; background: #f0f0f0; }
+  #money {
+    position: fixed; top: 10px; left: 10px;
+    background: rgba(0,0,0,0.6); color: white; padding: 8px 12px; border-radius: 6px;
+    font-size: 18px; font-weight: bold;
+    user-select: none;
+    z-index: 10;
+  }
+  #instructions {
+    position: fixed; bottom: 10px; left: 10px;
+    background: rgba(0,0,0,0.6); color: white; padding: 8px 12px; border-radius: 6px;
+    font-size: 14px; user-select: none;
+    z-index: 10;
+  }
+  #upgrades {
+    position: fixed; top: 50px; left: 10px;
+    background: rgba(255,255,255,0.9);
+    padding: 10px;
+    border-radius: 8px;
+    max-width: 160px;
+    user-select: none;
+    z-index: 10;
+  }
+  #upgrades button {
+    display: block;
+    width: 100%;
+    margin: 6px 0;
+    padding: 10px;
+    font-size: 18px;
+    cursor: pointer;
+    border-radius: 6px;
+    border: none;
+    background-color: #0077ff;
+    color: white;
+    transition: background-color 0.3s ease;
+  }
+  #upgrades button:disabled {
+    background-color: #999;
+    cursor: not-allowed;
+  }
+</style>
+</head>
+<body>
+
+<div id="money">Money: $0</div>
+<div id="instructions">Watch customers, upgrade food supply!</div>
+
+<div id="upgrades">
+  <strong>Upgrade Food Supply</strong>
+  <button id="btn-egg">🥚 Eggs (Start)</button>
+  <button id="btn-burger" disabled>🍔 Burger ($100)</button>
+  <button id="btn-taco" disabled>🌮 Taco ($300)</button>
+  <button id="btn-pizza" disabled>🍕 Pizza ($1000)</button>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.152.2/examples/jsm/sprites/TextureAnimator.js"></script>
+
+<script>
+  (function() {
+    // Setup Three.js scene
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xa0c8ff);
+
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+    camera.position.set(0, 12, 20);
+    camera.lookAt(0, 0, 0);
+
+    const renderer = new THREE.WebGLRenderer({antialias: true});
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    // Lights
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+    scene.add(ambientLight);
+
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.5);
+    dirLight.position.set(5, 10, 7);
+    scene.add(dirLight);
+
+    // Floor (restaurant floor)
+    const floorGeo = new THREE.PlaneGeometry(30, 30);
+    const floorMat = new THREE.MeshStandardMaterial({color: 0xeeeeee});
+    const floor = new THREE.Mesh(floorGeo, floorMat);
+    floor.rotation.x = -Math.PI / 2;
+    scene.add(floor);
+
+    // Tables (simple boxes)
+    const tableGeometry = new THREE.BoxGeometry(3, 0.5, 2);
+    const tableMaterial = new THREE.MeshStandardMaterial({color: 0x8b4513});
+    const tables = [];
+
+    const tablePositions = [
+      [-8, 0.25, -6],
+      [-2, 0.25, -6],
+      [4, 0.25, -6],
+      [-8, 0.25, 0],
+      [-2, 0.25, 0],
+      [4, 0.25, 0],
+    ];
+
+    // For food sprites on tables, we’ll create sprites with text textures
+    // Helper function to create sprite with emoji texture
+    function createEmojiSprite(emoji) {
+      const canvas = document.createElement('canvas');
+      canvas.width = 128; canvas.height = 128;
+      const ctx = canvas.getContext('2d');
+      ctx.font = '96px serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(emoji, 64, 64);
+
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.needsUpdate = true;
+
+      const material = new THREE.SpriteMaterial({map: texture, transparent: true});
+      const sprite = new THREE.Sprite(material);
+      sprite.scale.set(1.5, 1.5, 1);
+      return sprite;
+    }
+
+    tablePositions.forEach(pos => {
+      const table = new THREE.Mesh(tableGeometry, tableMaterial);
+      table.position.set(...pos);
+      scene.add(table);
+      tables.push({
+        mesh: table,
+        occupied: false,
+        foodSprite: null // will be THREE.Sprite when customer sits
+      });
+    });
+
+    // Chairs around tables (visual only)
+    const chairGeo = new THREE.BoxGeometry(0.8, 1, 0.8);
+    const chairMat = new THREE.MeshStandardMaterial({color: 0x654321});
+    tables.forEach(({mesh}) => {
+      const positions = [
+        [mesh.position.x - 1.5, 0.5, mesh.position.z - 0.75],
+        [mesh.position.x - 1.5, 0.5, mesh.position.z + 0.75],
+        [mesh.position.x + 1.5, 0.5, mesh.position.z - 0.75],
+        [mesh.position.x + 1.5, 0.5, mesh.position.z + 0.75],
+      ];
+      positions.forEach(p => {
+        const chair = new THREE.Mesh(chairGeo, chairMat);
+        chair.position.set(...p);
+        scene.add(chair);
+      });
+    });
+
+    // Customer emoji options
+    const customerEmojis = ['🧍🏻‍♂️', '🧍🏾‍♂️', '🧍🏽‍♂️', '🧍🏻‍♂️'];
+
+    // Customers list
+    const customers = [];
+    const waitingQueue = [];
+
+    // Money system
+    let money = 0;
+    const moneyDiv = document.getElementById('money');
+
+    // Food types with cost and pay
+    const foodTypes = [
+      {name: 'Eggs', emoji: '🥚', cost: 0, pay: 5},
+      {name: 'Burger', emoji: '🍔', cost: 100, pay: 15},
+      {name: 'Taco', emoji: '🌮', cost: 300, pay: 30},
+      {name: 'Pizza', emoji: '🍕', cost: 1000, pay: 75},
+    ];
+
+    let currentFoodIndex = 0; // Start with Eggs
+
+    // Buttons
+    const btnEgg = document.getElementById('btn-egg');
+    const btnBurger = document.getElementById('btn-burger');
+    const btnTaco = document.getElementById('btn-taco');
+    const btnPizza = document.getElementById('btn-pizza');
+
+    btnEgg.disabled = true;
+
+    function updateButtons() {
+      btnBurger.disabled = money < foodTypes[1].cost || currentFoodIndex >= 1;
+      btnTaco.disabled = money < foodTypes[2].cost || currentFoodIndex >= 2;
+      btnPizza.disabled = money < foodTypes[3].cost || currentFoodIndex >= 3;
+    }
+
+    btnBurger.addEventListener('click', () => {
+      if (money >= foodTypes[1].cost) {
+        money -= foodTypes[1].cost;
+        currentFoodIndex = 1;
+        updateButtons();
+        updateMoney();
+      }
+    });
+    btnTaco.addEventListener('click', () => {
+      if (money >= foodTypes[2].cost) {
+        money -= foodTypes[2].cost;
+        currentFoodIndex = 2;
+        updateButtons();
+        updateMoney();
+      }
+    });
+    btnPizza.addEventListener('click', () => {
+      if (money >= foodTypes[3].cost) {
+        money -= foodTypes[3].cost;
+        currentFoodIndex = 3;
+        updateButtons();
+        updateMoney();
+      }
+    });
+
+    function updateMoney() {
+      moneyDiv.textContent = `Money: $${money}`;
+    }
+
+    // Create customer mesh with emoji texture sprite
+    function createCustomerSprite(emoji) {
+      const canvas = document.createElement('canvas');
+      canvas.width = 128;
+      canvas.height = 128;
+      const ctx = canvas.getContext('2d');
+      ctx.font = '96px serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(emoji, 64, 64);
+
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.needsUpdate = true;
+
+      const material = new THREE.SpriteMaterial({map: texture, transparent: true});
+      const sprite = new THREE.Sprite(material);
+      sprite.scale.set(1.5, 1.5, 1);
+      return sprite;
+    }
+
+    // Customer class (3D sprite in scene)
+    class Customer {
+      constructor() {
+        this.state = 'waitingInQueue'; // waitingInQueue, goingToTable, sitting, eating, leaving
+        this.speed = 3 + Math.random();
+        this.targetTable = null;
+        this.eatTimer = 0;
+        this.position = new THREE.Vector3(0, 0, 18); // spawn outside floor
+
+        this.emoji = customerEmojis[Math.floor(Math.random() * customerEmojis.length)];
+        this.sprite = createCustomerSprite(this.emoji);
+        this.sprite.position.copy(this.position);
+        scene.add(this.sprite);
+
+        // Queue position index (for waiting line)
+        this.queueIndex = null;
+      }
+
+      update(delta) {
+        switch(this.state) {
+          case 'waitingInQueue':
+            // Position customers in a line near entrance (X offset per queue index)
+            if (this.queueIndex !== null) {
+              const lineX = -8 + this.queueIndex * 2.5;
+              const lineZ = 18;
+              // Smooth move to queue spot
+              const targetPos = new THREE.Vector3(lineX, 0, lineZ);
+              this.moveTowards(targetPos, delta);
+            }
+            // Check if a free table now exists
+            const freeTable = tables.find(t => !t.occupied);
+            if (freeTable) {
+              // Remove self from queue
+              waitingQueue.shift();
+              for (let i = 0; i < waitingQueue.length; i++) {
+                waitingQueue[i].queueIndex = i;
+              }
+              this.queueIndex = null;
+
+              this.targetTable = freeTable;
+              freeTable.occupied = true;
+
+              this.state = 'goingToTable';
+            }
+            break;
+          case 'goingToTable':
+            // Move to a spot in front of the table (z + 1.5)
+            const targetPos = new THREE.Vector3(this.targetTable.mesh.position.x, 0, this.targetTable.mesh.position.z + 1.5);
+            if (this.position.distanceTo(targetPos) > 0.1) {
+              this.moveTowards(targetPos, delta);
+            } else {
+              this.state = 'sitting';
+              this.eatTimer = 0;
+
+              // Add food sprite on table
+              if (!this.targetTable.foodSprite) {
+                this.targetTable.foodSprite = createEmojiSprite(foodTypes[currentFoodIndex].emoji);
+                this.targetTable.foodSprite.position.set(
+                  this.targetTable.mesh.position.x,
+                  this.targetTable.mesh.position.y + 1.3,
+                  this.targetTable.mesh.position.z
+                );
+                scene.add(this.targetTable.foodSprite);
+              } else {
+                this.targetTable.foodSprite.material.map.image.getContext('2d').clearRect(0, 0, 128, 128);
+                // recreate canvas for new emoji
+                const ctx = this.targetTable.foodSprite.material.map.image.getContext('2d');
+                ctx.font = '96px serif';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(foodTypes[currentFoodIndex].emoji, 64, 64);
+                this.targetTable.foodSprite.material.map.needsUpdate = true;
+                this.targetTable.foodSprite.visible = true;
+              }
+            }
+            break;
+          case 'sitting':
+            this.eatTimer += delta;
+            if (this.eatTimer > 5) {
+              this.state = 'leaving';
+              this.targetTable.occupied = false;
+
+              if(this.targetTable.foodSprite) {
+                this.targetTable.foodSprite.visible = false;
+              }
+
+              money += foodTypes[currentFoodIndex].pay;
+              updateMoney();
+              updateButtons();
+            }
+            break;
+          case 'leaving':
+            // Move out forward in Z
+            const leavePos = new THREE.Vector3(this.position.x, 0, 25);
+            if (this.position.distanceTo(leavePos) > 0.1) {
+              this.moveTowards(leavePos, delta);
+            } else {
+              scene.remove(this.sprite);
+              return false; // remove customer from list
+            }
+            break;
+        }
+        this.sprite.position.copy(this.position);
+        return true;
+      }
+
+      moveTowards(target, delta) {
+        const dir = target.clone().sub(this.position);
+        const distance = dir.length();
+        if (distance < 0.01) return;
+        dir.normalize();
+        const moveDist = this.speed * delta;
+        if (moveDist > distance) {
+          this.position.copy(target);
+        } else {
+          this.position.add(dir.multiplyScalar(moveDist));
+        }
+      }
+    }
+
+    // Spawn customers every few seconds and add to queue
+    let spawnTimer = 0;
+    const customersList = [];
+
+    function spawnCustomer() {
+      if(customersList.length < 20) { // limit max customers
+        const customer = new Customer();
+        customer.queueIndex = waitingQueue.length;
+        waitingQueue.push(customer);
+        customersList.push(customer);
+      }
+    }
+
+    // Animation loop
+    const clock = new THREE.Clock();
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const delta = clock.getDelta();
+
+      spawnTimer += delta;
+      if (spawnTimer > 3) {
+        spawnCustomer();
+        spawnTimer = 0;
+      }
+
+      for(let i = customersList.length -1; i >= 0; i--) {
+        if (!customersList[i].update(delta)) {
+          customersList.splice(i, 1);
+        }
+      }
+
+      renderer.render(scene, camera);
+    }
+
+    animate();
+
+    // Resize handler
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth/window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  })();
+</script>
+
+</body>
+</html>
